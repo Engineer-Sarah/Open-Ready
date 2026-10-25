@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 type Item = { label?: string; detail?: string; why?: string };
 const clip = (v: unknown) => String(v ?? "").slice(0, 200);
 
-// Google ke current active models ki list
+// Models to try in order of Google AI Studio availability
 const MODELS_TO_TRY = [
   "gemini-2.5-flash",
   "gemini-2.0-flash",
@@ -46,7 +46,6 @@ Write a short, encouraging explanation in plain English. Start with one sentence
 
   let lastError = "Could not generate AI explanation.";
 
-  // Auto-fallback: jo model available hoga wahi chalega
   for (const model of MODELS_TO_TRY) {
     try {
       const res = await fetch(

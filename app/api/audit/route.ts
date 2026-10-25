@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { AuditError, parseRepo, runAudit } from "@/lib/audit";
 
-// POST /api/audit  with body: { "repo": "https://github.com/owner/name" }
 export async function POST(req: Request) {
   let body: { repo?: string };
   try {

@@ -1,6 +1,5 @@
 import { parseRepo, runAudit } from "@/lib/audit";
 
-// GET /api/badge?repo=owner/name  ->  SVG badge like "open-source ready | 92"
 function badge(label: string, value: string, color: string) {
   const lw = Math.round(label.length * 6.2 + 16);
   const vw = Math.round(value.length * 6.2 + 16);
