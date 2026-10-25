@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="https://api.iconify.design/lucide:shield-check.svg?color=%2310b981" width="100" height="100" alt="OpenReady Logo" />
+  <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Shield.png" width="95" height="95" alt="OpenReady Logo" />
 
   <h1>OpenReady</h1>
 
