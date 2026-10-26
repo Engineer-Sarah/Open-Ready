@@ -1,8 +1,8 @@
 <div align="center">
 
-  <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Shield.png" width="95" height="95" alt="OpenReady Logo" />
+  <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/terminal.svg" width="80" height="80" style="filter: invert(60%) sepia(80%) saturate(450%) hue-rotate(115deg);" alt="OpenReady Logo" />
 
-  <h1>OpenReady</h1>
+  <h1 align="center" style="letter-spacing: -1px; font-weight: 800;">OpenReady</h1>
 
   <p>
     <b>Is your repository ready for open source?</b><br />
