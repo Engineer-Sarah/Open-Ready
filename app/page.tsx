@@ -3,41 +3,13 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { AuditResult } from "@/lib/audit";
 import { FIXES } from "@/lib/templates";
+import JSZip from "jszip";
 
-const REPO_URL = "https://github.com/Engineer-Sarah/Open-Ready";
 const EXAMPLES = ["Engineer-Sarah/Open-Ready", "vercel/next.js", "facebook/react"];
 
-const STATS = [
-  { big: "8", small: "checks" },
-  { big: "100", small: "point score" },
-  { big: "0", small: "sign-ups" },
-];
-
-const STEPS = [
-  { n: "1", title: "Paste a repo", text: "Any public GitHub URL or owner/name. No sign-up, no token needed." },
-  { n: "2", title: "We audit it", text: "OpenReady reads the repository through the GitHub API and runs 8 checks." },
-  { n: "3", title: "Fix and share", text: "Get a score, copy-paste fixes, an AI explanation and a badge for your README." },
-];
-
-const CHECKS = [
-  { name: "LICENSE file", pts: 25, text: "Legal permission for others to use your code." },
-  { name: "README file", pts: 10, text: "The first thing every visitor sees." },
-  { name: "README sections", pts: 15, text: "Setup, usage and license headings." },
-  { name: "CONTRIBUTING guide", pts: 10, text: "Tells newcomers how to help." },
-  { name: ".gitignore", pts: 10, text: "Keeps junk and secrets out of the repo." },
-  { name: "Secret-looking files", pts: 15, text: "Flags files like .env or private keys (by file name only)." },
-  { name: "Description and topics", pts: 5, text: "Helps people discover the project." },
-  { name: "Recent activity", pts: 10, text: "Shows the project is maintained." },
-];
-
-type Ai = { loading: boolean; text: string | null; error: string | null };
-const AI_IDLE: Ai = { loading: false, text: null, error: null };
-
 function tone(score: number) {
-  if (score >= 80)
-    return { text: "text-emerald-400", stroke: "stroke-emerald-400", label: "Open-source ready" };
-  if (score >= 50)
-    return { text: "text-amber-400", stroke: "stroke-amber-400", label: "Almost there" };
+  if (score >= 80) return { text: "text-emerald-400", stroke: "stroke-emerald-400", label: "Open-source ready" };
+  if (score >= 50) return { text: "text-amber-400", stroke: "stroke-amber-400", label: "Almost there" };
   return { text: "text-rose-400", stroke: "stroke-rose-400", label: "Needs work" };
 }
 
@@ -48,20 +20,20 @@ function Gauge({ score }: { score: number }) {
     return () => clearTimeout(timer);
   }, [score]);
 
-  const r = 70;
+  const r = 68;
   const c = 2 * Math.PI * r;
   const t = tone(score);
 
   return (
-    <div className="relative h-52 w-52 shrink-0">
-      <svg viewBox="0 0 180 180" className="h-full w-full -rotate-90" role="img" aria-label={`Score ${score} out of 100`}>
-        <circle cx="90" cy="90" r={r} fill="none" strokeWidth="14" className="stroke-slate-800" />
+    <div className="relative h-48 w-48 shrink-0">
+      <svg viewBox="0 0 180 180" className="h-full w-full -rotate-90">
+        <circle cx="90" cy="90" r={r} fill="none" strokeWidth="12" className="stroke-slate-800" />
         <circle
           cx="90"
           cy="90"
           r={r}
           fill="none"
-          strokeWidth="14"
+          strokeWidth="12"
           strokeLinecap="round"
           strokeDasharray={c}
           strokeDashoffset={c - (shown / 100) * c}
@@ -69,379 +41,404 @@ function Gauge({ score }: { score: number }) {
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className={`text-6xl font-bold ${t.text}`}>{score}</span>
-        <span className="text-sm text-slate-400">out of 100</span>
+        <span className={`text-5xl font-extrabold ${t.text}`}>{score}</span>
+        <span className="text-xs font-medium uppercase tracking-wider text-slate-400">Score / 100</span>
       </div>
     </div>
   );
 }
 
 export default function Home() {
+  const [mode, setMode] = useState<"single" | "battle">("single");
   const [repo, setRepo] = useState("");
+  const [repo2, setRepo2] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const [result, setResult] = useState<AuditResult | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
-  const [ai, setAi] = useState<Ai>(AI_IDLE);
+  const [result2, setResult2] = useState<AuditResult | null>(null);
+
+  const [aiText, setAiText] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  const [generatedReadme, setGeneratedReadme] = useState<string | null>(null);
+  const [readmeLoading, setReadmeLoading] = useState(false);
+
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const resultRef = useRef<HTMLElement>(null);
 
-  useEffect(() => {
-    if (result) resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [result]);
+  async function auditApi(target: string) {
+    const res = await fetch("/api/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: target }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Audit failed");
+    return data as AuditResult;
+  }
 
-  // Shareable links: /?repo=owner/name runs the check automatically.
-  useEffect(() => {
-    const shared = new URLSearchParams(window.location.search).get("repo");
-    if (shared) runCheck(shared);
-  }, []);
-
-  async function runCheck(target: string) {
-    setRepo(target);
+  async function handleAudit(e: FormEvent) {
+    e.preventDefault();
+    if (!repo.trim()) return;
     setLoading(true);
     setError(null);
     setResult(null);
-    setAi(AI_IDLE);
+    setResult2(null);
+    setAiText(null);
+    setGeneratedReadme(null);
+
     try {
-      const res = await fetch("/api/audit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo: target }),
-      });
-      const data = await res.json();
-      if (!res.ok) setError(data.error ?? "Something went wrong.");
-      else setResult(data as AuditResult);
-    } catch {
-      setError("Network error. Please check your connection and try again.");
+      if (mode === "single") {
+        const res = await auditApi(repo);
+        setResult(res);
+      } else {
+        if (!repo2.trim()) throw new Error("Please enter both repositories for Battle mode.");
+        const [r1, r2] = await Promise.all([auditApi(repo), auditApi(repo2)]);
+        setResult(r1);
+        setResult2(r2);
+      }
+    } catch (err: any) {
+      setError(err.message || "Network error. Please try again.");
     } finally {
       setLoading(false);
     }
   }
 
-  function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (repo.trim()) runCheck(repo);
-  }
-
-  async function copy(text: string, key: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(key);
-      setTimeout(() => setCopied(null), 1500);
-    } catch {
-      setError("Could not copy. Please select the text and copy it manually.");
-    }
-  }
-
-  async function explain() {
+  async function askAi() {
     if (!result) return;
-    setAi({ loading: true, text: null, error: null });
-    const failedChecks = result.checks
-      .filter((c) => !c.passed)
-      .map((c) => ({ label: c.label, detail: c.detail ?? "", why: c.why }));
+    setAiLoading(true);
     try {
       const res = await fetch("/api/explain", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo: result.repo, score: result.score, failed: failedChecks }),
+        body: JSON.stringify({
+          repo: result.repo,
+          score: result.score,
+          failed: result.checks.filter((c) => !c.passed).map((c) => ({ label: c.label, detail: c.detail, why: c.why })),
+        }),
       });
       const data = await res.json();
-      if (!res.ok) setAi({ loading: false, text: null, error: data.error ?? "Something went wrong." });
-      else setAi({ loading: false, text: data.text, error: null });
+      if (res.ok) setAiText(data.text);
+      else setAiText("AI explanation could not be generated.");
     } catch {
-      setAi({ loading: false, text: null, error: "Network error. Please try again." });
+      setAiText("Failed to reach AI service.");
+    } finally {
+      setAiLoading(false);
     }
   }
 
-  const t = result ? tone(result.score) : null;
-  const failed = result
-    ? result.checks
-        .filter((c) => !c.passed)
-        .sort((a, b) => b.maxPoints - b.points - (a.maxPoints - a.points))
-    : [];
-  const gain = failed.reduce((sum, c) => sum + (c.maxPoints - c.points), 0);
-  const card = "rounded-2xl border border-slate-800 bg-slate-900/60";
+  async function generateFullReadme() {
+    if (!result) return;
+    setReadmeLoading(true);
+    try {
+      const res = await fetch("/api/generate-readme", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo: result.repo, description: result.description }),
+      });
+      const data = await res.json();
+      if (res.ok) setGeneratedReadme(data.readme);
+      else setError("Failed to generate AI README.");
+    } catch {
+      setError("AI generation failed.");
+    } finally {
+      setReadmeLoading(false);
+    }
+  }
+
+  async function downloadFixZip() {
+    if (!result) return;
+    const zip = new JSZip();
+    const failedIds = result.checks.filter((c) => !c.passed).map((c) => c.id);
+
+    failedIds.forEach((id) => {
+      const fix = FIXES[id];
+      if (fix && fix.file && fix.body) {
+        zip.file(fix.file, fix.body);
+      }
+    });
+
+    const content = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(content);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${result.repo.replace("/", "-")}-openready-fixes.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadAuditReport() {
+    if (!result) return;
+    const report = `# OpenReady Audit Report for ${result.repo}
+Date: ${new Date().toLocaleDateString()}
+Score: ${result.score}/100
+
+## Checks Summary:
+${result.checks.map((c) => `- [${c.passed ? "X" : " "}] ${c.label} (${c.points}/${c.maxPoints} pts)`).join("\n")}
+
+Generated by OpenReady (https://github.com/Engineer-Sarah/Open-Ready)
+`;
+    const blob = new Blob([report], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${result.repo.replace("/", "-")}-audit-report.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function copyText(txt: string, key: string) {
+    navigator.clipboard.writeText(txt);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 1500);
+  }
+
+  const failedChecks = result ? result.checks.filter((c) => !c.passed) : [];
 
   return (
-    <div
-      className="min-h-screen bg-slate-950 text-slate-100"
-      style={{
-        backgroundImage:
-          "radial-gradient(60rem 30rem at 50% -10%, rgba(16,185,129,0.20), transparent), radial-gradient(40rem 25rem at 90% 10%, rgba(56,189,248,0.14), transparent)",
-      }}
-    >
-      {/* Navbar */}
-      <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
-        <nav className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
-          <a href="#top" className="flex items-center gap-2 text-lg font-bold">
-            <span className="grid h-8 w-8 place-items-center rounded-lg bg-emerald-500 text-slate-950">✓</span>
-            OpenReady
-          </a>
-          <div className="flex items-center gap-5 text-sm text-slate-300">
-            <a href="#how" className="hidden hover:text-white sm:block">How it works</a>
-            <a href="#checks" className="hidden hover:text-white sm:block">What we check</a>
-            <a
-              href={REPO_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-lg border border-slate-700 px-3 py-1.5 hover:bg-slate-800"
-            >
-              GitHub
-            </a>
+    <div className="min-h-screen bg-slate-950 text-slate-100 selection:bg-emerald-500 selection:text-slate-950">
+      {/* Header */}
+      <header className="border-b border-slate-800 bg-slate-950/70 backdrop-blur sticky top-0 z-20">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="grid h-8 w-8 place-items-center rounded-lg bg-emerald-500 font-bold text-slate-950">✓</span>
+            <span className="text-xl font-bold tracking-tight">OpenReady</span>
           </div>
-        </nav>
+
+          <div className="flex rounded-lg bg-slate-900 p-1 border border-slate-800">
+            <button
+              onClick={() => { setMode("single"); setResult2(null); }}
+              className={`rounded-md px-3 py-1 text-xs font-semibold transition ${mode === "single" ? "bg-emerald-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
+            >
+              📊 Single Audit
+            </button>
+            <button
+              onClick={() => setMode("battle")}
+              className={`rounded-md px-3 py-1 text-xs font-semibold transition ${mode === "battle" ? "bg-purple-500 text-white" : "text-slate-400 hover:text-white"}`}
+            >
+              ⚔️ Repo Battle
+            </button>
+          </div>
+        </div>
       </header>
 
       {/* Hero */}
-      <section id="top" className="mx-auto max-w-3xl px-4 pb-10 pt-16 text-center sm:pt-24">
-        <span className="inline-block rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-300">
-          Free · Open source · MIT licensed
-        </span>
-        <h1 className="mt-6 text-4xl font-bold leading-tight sm:text-7xl">
-          Is your repo ready for{" "}
-          <span className="bg-gradient-to-r from-emerald-300 to-sky-400 bg-clip-text text-transparent">
-            open source?
+      <main className="mx-auto max-w-5xl px-4 py-12">
+        <div className="text-center">
+          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
+            Hacktoberfest & Developer Tooling Platform
           </span>
-        </h1>
-        <p className="mx-auto mt-5 max-w-xl text-lg text-slate-400">
-          Paste any public GitHub repository. Get an instant readiness score, copy-paste fixes and a plain-English
-          explanation of what to do next.
-        </p>
-
-        <form onSubmit={onSubmit} className="mx-auto mt-8 flex max-w-xl flex-col gap-2 sm:flex-row">
-          <input
-            value={repo}
-            onChange={(e) => setRepo(e.target.value)}
-            placeholder="https://github.com/owner/repo"
-            aria-label="GitHub repository URL"
-            className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-slate-100 placeholder:text-slate-500 focus:border-emerald-400 focus:outline-none"
-          />
-          <button
-            type="submit"
-            disabled={loading || !repo.trim()}
-            className="rounded-xl bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
-          >
-            {loading ? "Checking..." : "Check my repo"}
-          </button>
-        </form>
-
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-sm text-slate-400">
-          <span>Try:</span>
-          {EXAMPLES.map((ex) => (
-            <button
-              key={ex}
-              type="button"
-              onClick={() => runCheck(ex)}
-              disabled={loading}
-              className="rounded-full border border-slate-700 px-3 py-1 hover:border-emerald-400 hover:text-white disabled:opacity-50"
-            >
-              {ex}
-            </button>
-          ))}
-        </div>
-
-        <div className="mx-auto mt-10 flex max-w-md justify-between">
-          {STATS.map((s) => (
-            <div key={s.small}>
-              <p className="text-3xl font-bold text-emerald-300">{s.big}</p>
-              <p className="text-sm text-slate-500">{s.small}</p>
-            </div>
-          ))}
-        </div>
-
-        {error && (
-          <p className="mx-auto mt-8 max-w-xl rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-rose-300" role="alert">
-            {error}
+          <h1 className="mt-4 text-4xl font-extrabold sm:text-6xl">
+            {mode === "single" ? "Is your repo ready for " : "Compare Repo Readiness: "}
+            <span className="bg-gradient-to-r from-emerald-400 via-sky-400 to-indigo-400 bg-clip-text text-transparent">
+              Open Source?
+            </span>
+          </h1>
+          <p className="mx-auto mt-3 max-w-xl text-slate-400">
+            {mode === "single"
+              ? "Audit any public repository, generate custom AI READMEs, and download 1-click fix bundles."
+              : "Compare two repositories side-by-side to benchmark health, documentation, and licensing standards."}
           </p>
-        )}
-      </section>
 
-      {/* Loading skeleton */}
-      {loading && (
-        <section className="mx-auto max-w-3xl px-4 pb-16" aria-busy="true">
-          <div className={`${card} h-72 animate-pulse`} />
-        </section>
-      )}
-
-      {/* Result */}
-      {result && t && (
-        <section ref={resultRef} className="mx-auto max-w-3xl scroll-mt-20 px-4 pb-16">
-          <div className={`${card} p-6 sm:p-8`}>
-            <div className="flex flex-col items-center gap-6 sm:flex-row sm:gap-10">
-              <Gauge score={result.score} />
-              <div className="text-center sm:text-left">
-                <a href={result.url} target="_blank" rel="noreferrer" className="text-slate-400 underline hover:text-white">
-                  {result.repo}
-                </a>
-                <h2 className={`mt-1 text-3xl font-bold ${t.text}`}>{t.label}</h2>
-                <p className="mt-2 text-slate-400">
-                  {result.checks.filter((c) => c.passed).length} of {result.checks.length} checks fully passed.
-                </p>
-                {result.description && <p className="mt-2 text-sm text-slate-500">{result.description}</p>}
-              </div>
-            </div>
-
-            {/* Priorities */}
-            <div className="mt-8 rounded-xl border border-slate-800 bg-slate-950/60 p-5">
-              {failed.length === 0 ? (
-                <p className="font-medium text-emerald-300">Perfect score. This repository is ready to be shared with the world.</p>
-              ) : (
-                <>
-                  <h3 className="font-semibold">Fix these first</h3>
-                  <p className="mt-1 text-sm text-slate-400">Fixing everything would add up to +{gain} points.</p>
-                  <ul className="mt-3 space-y-2">
-                    {failed.slice(0, 3).map((c) => (
-                      <li key={c.id} className="flex items-center justify-between gap-3 text-sm">
-                        <span>{c.label}</span>
-                        <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 font-medium text-emerald-300">
-                          +{c.maxPoints - c.points} pts
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                  <button
-                    type="button"
-                    onClick={explain}
-                    disabled={ai.loading}
-                    className="mt-4 rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50"
-                  >
-                    {ai.loading ? "Thinking..." : "✨ Explain in simple words (AI)"}
-                  </button>
-                  {ai.error && <p className="mt-3 text-sm text-rose-300">{ai.error}</p>}
-                  {ai.text && (
-                    <p className="mt-3 whitespace-pre-line rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-sm text-slate-200">
-                      {ai.text}
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* All checks */}
-            <ul className="mt-6 space-y-3">
-              {result.checks.map((c) => {
-                const pct = (c.points / c.maxPoints) * 100;
-                const bar = c.passed ? "bg-emerald-400" : c.points > 0 ? "bg-amber-400" : "bg-rose-400";
-                const fix = FIXES[c.id];
-                return (
-                  <li key={c.id} className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="font-medium">
-                        {c.passed ? "✅" : c.points > 0 ? "⚠️" : "❌"} {c.label}
-                      </span>
-                      <span className="text-sm text-slate-400">
-                        {c.points}/{c.maxPoints}
-                      </span>
-                    </div>
-                    <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-800">
-                      <div className={`h-full rounded-full ${bar}`} style={{ width: `${pct}%` }} />
-                    </div>
-                    {!c.passed && c.detail && <p className="mt-3 text-sm text-rose-300">{c.detail}</p>}
-                    <p className="mt-2 text-sm text-slate-400">{c.why}</p>
-                    {!c.passed && fix && (
-                      <details className="mt-3 rounded-lg border border-slate-800 bg-slate-900 p-3">
-                        <summary className="cursor-pointer text-sm font-medium text-emerald-300">How to fix this</summary>
-                        <p className="mt-2 text-sm text-slate-300">{fix.steps}</p>
-                        {fix.body && (
-                          <>
-                            <pre className="mt-3 max-h-56 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
-                              {fix.body}
-                            </pre>
-                            <button
-                              type="button"
-                              onClick={() => copy(fix.body ?? "", c.id)}
-                              className="mt-2 rounded-lg bg-emerald-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
-                            >
-                              {copied === c.id ? "Copied!" : `Copy ${fix.file ?? "template"}`}
-                            </button>
-                          </>
-                        )}
-                      </details>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-
-            {/* Badge and share */}
-            <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/60 p-5">
-              <h3 className="font-semibold">Show your score</h3>
-              <p className="mt-1 text-sm text-slate-400">Add this badge to your README, or share the result.</p>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={`/api/badge?repo=${result.repo}`} alt="OpenReady score badge" className="mt-3 h-5" />
-              <pre className="mt-3 overflow-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
-                {`![OpenReady](${window.location.origin}/api/badge?repo=${result.repo})`}
-              </pre>
-              <div className="mt-3 flex flex-wrap gap-2">
+          {/* Form */}
+          <form onSubmit={handleAudit} className="mx-auto mt-8 max-w-2xl">
+            {mode === "single" ? (
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  value={repo}
+                  onChange={(e) => setRepo(e.target.value)}
+                  placeholder="e.g. Engineer-Sarah/Open-Ready or full GitHub URL"
+                  className="flex-1 rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm focus:border-emerald-400 focus:outline-none"
+                />
                 <button
-                  type="button"
-                  onClick={() => copy(`![OpenReady](${window.location.origin}/api/badge?repo=${result.repo})`, "badge")}
-                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800"
+                  type="submit"
+                  disabled={loading || !repo.trim()}
+                  className="rounded-xl bg-emerald-500 px-6 py-3 font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-50"
                 >
-                  {copied === "badge" ? "Copied!" : "Copy badge markdown"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => copy(`${window.location.origin}/?repo=${result.repo}`, "share")}
-                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800"
-                >
-                  {copied === "share" ? "Copied!" : "Copy shareable link"}
+                  {loading ? "Auditing..." : "Audit Repo"}
                 </button>
               </div>
-            </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <input
+                    value={repo}
+                    onChange={(e) => setRepo(e.target.value)}
+                    placeholder="First repo (e.g. Engineer-Sarah/Open-Ready)"
+                    className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm focus:border-purple-400 focus:outline-none"
+                  />
+                  <input
+                    value={repo2}
+                    onChange={(e) => setRepo2(e.target.value)}
+                    placeholder="Second repo (e.g. vercel/next.js)"
+                    className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm focus:border-purple-400 focus:outline-none"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={loading || !repo.trim() || !repo2.trim()}
+                  className="rounded-xl bg-purple-600 px-6 py-3 font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
+                >
+                  {loading ? "Battling..." : "⚔️ Start Repo Battle"}
+                </button>
+              </div>
+            )}
+          </form>
+
+          {/* Examples */}
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-xs text-slate-400">
+            <span>Try:</span>
+            {EXAMPLES.map((ex) => (
+              <button
+                key={ex}
+                onClick={() => { setRepo(ex); }}
+                className="rounded-full border border-slate-800 bg-slate-900 px-2.5 py-1 hover:border-slate-700 hover:text-white"
+              >
+                {ex}
+              </button>
+            ))}
           </div>
-        </section>
-      )}
 
-      {/* How it works */}
-      <section id="how" className="mx-auto max-w-5xl scroll-mt-20 px-4 py-16">
-        <h2 className="text-center text-3xl font-bold">How it works</h2>
-        <div className="mt-10 grid gap-4 sm:grid-cols-3">
-          {STEPS.map((s) => (
-            <div key={s.n} className={`${card} p-6`}>
-              <span className="grid h-9 w-9 place-items-center rounded-full bg-emerald-500/15 font-bold text-emerald-300">
-                {s.n}
-              </span>
-              <h3 className="mt-4 text-lg font-semibold">{s.title}</h3>
-              <p className="mt-2 text-sm text-slate-400">{s.text}</p>
-            </div>
-          ))}
+          {error && <p className="mt-6 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">{error}</p>}
         </div>
-      </section>
 
-      {/* What we check */}
-      <section id="checks" className="mx-auto max-w-5xl scroll-mt-20 px-4 pb-16">
-        <h2 className="text-center text-3xl font-bold">What we check</h2>
-        <p className="mx-auto mt-3 max-w-xl text-center text-slate-400">
-          Every check maps to something real contributors look for before they trust a project.
-        </p>
-        <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {CHECKS.map((c) => (
-            <div key={c.name} className={`${card} p-5`}>
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="font-semibold">{c.name}</h3>
-                <span className="shrink-0 text-xs text-emerald-300">{c.pts} pts</span>
+        {/* Results Section */}
+        {result && (
+          <div ref={resultRef} className="mt-12 space-y-8">
+            {/* Battle View */}
+            {mode === "battle" && result2 ? (
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                {[result, result2].map((r, idx) => (
+                  <div key={r.repo} className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+                    <span className="text-xs font-bold uppercase tracking-wider text-purple-400">Contender #{idx + 1}</span>
+                    <h3 className="mt-1 text-xl font-bold truncate">{r.repo}</h3>
+                    <div className="mt-4 flex items-center justify-center">
+                      <Gauge score={r.score} />
+                    </div>
+                    <ul className="mt-6 space-y-2">
+                      {r.checks.map((c) => (
+                        <li key={c.id} className="flex items-center justify-between text-xs py-1 border-b border-slate-800/60">
+                          <span className="text-slate-300">{c.label}</span>
+                          <span className={c.passed ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
+                            {c.points}/{c.maxPoints} pts
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
               </div>
-              <p className="mt-2 text-sm text-slate-400">{c.text}</p>
-            </div>
-          ))}
-        </div>
-      </section>
+            ) : (
+              /* Single Audit View */
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8">
+                {/* Top Banner */}
+                <div className="flex flex-col items-center gap-6 sm:flex-row sm:justify-between">
+                  <div className="flex flex-col sm:flex-row items-center gap-6">
+                    <Gauge score={result.score} />
+                    <div className="text-center sm:text-left">
+                      <a href={result.url} target="_blank" rel="noreferrer" className="text-xs text-slate-400 hover:underline">
+                        {result.repo} ↗
+                      </a>
+                      <h2 className={`text-3xl font-extrabold ${tone(result.score).text}`}>{tone(result.score).label}</h2>
+                      <p className="mt-1 text-sm text-slate-400">
+                        {result.checks.filter((c) => c.passed).length} of {result.checks.length} checks fully passed.
+                      </p>
+                    </div>
+                  </div>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-800 px-4 py-8 text-center text-sm text-slate-500">
-        <p>
-          OpenReady is open source under the{" "}
-          <a href={`${REPO_URL}/blob/main/LICENSE`} target="_blank" rel="noreferrer" className="underline hover:text-slate-300">
-            MIT License
-          </a>
-          . Built by Sarah Abrar for Hacktoberfest Hackathon NUSTxNSTP.
-        </p>
-        <p className="mt-2">
-          <a href={REPO_URL} target="_blank" rel="noreferrer" className="underline hover:text-slate-300">
-            View the source on GitHub
-          </a>
-        </p>
-      </footer>
+                  {/* Actions Toolbar */}
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    <button
+                      onClick={downloadFixZip}
+                      className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20"
+                    >
+                      📦 Download Fixes (.zip)
+                    </button>
+                    <button
+                      onClick={downloadAuditReport}
+                      className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+                    >
+                      📄 Export Report (.md)
+                    </button>
+                    <button
+                      onClick={generateFullReadme}
+                      disabled={readmeLoading}
+                      className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
+                    >
+                      {readmeLoading ? "AI Writing..." : "✨ AI Generate README"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* AI Explanation Box */}
+                <div className="mt-8 rounded-xl border border-sky-500/30 bg-sky-950/20 p-5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-sky-300">🤖 AI Mentor Breakdown</h3>
+                    <button
+                      onClick={askAi}
+                      disabled={aiLoading}
+                      className="rounded-lg bg-sky-500 px-3 py-1 text-xs font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-50"
+                    >
+                      {aiLoading ? "Thinking..." : "Explain with AI"}
+                    </button>
+                  </div>
+                  {aiText && <p className="mt-3 whitespace-pre-line text-sm text-slate-300">{aiText}</p>}
+                </div>
+
+                {/* AI Generated README Drawer */}
+                {generatedReadme && (
+                  <div className="mt-6 rounded-xl border border-indigo-500/40 bg-indigo-950/20 p-5">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-bold text-indigo-300">Generated Production README</h4>
+                      <button
+                        onClick={() => copyText(generatedReadme, "gen_readme")}
+                        className="rounded-lg bg-indigo-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-indigo-400"
+                      >
+                        {copiedKey === "gen_readme" ? "Copied!" : "Copy Full README"}
+                      </button>
+                    </div>
+                    <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-300 font-mono">
+                      {generatedReadme}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Checklist */}
+                <div className="mt-8">
+                  <h3 className="font-bold">Detailed Pillars Audit</h3>
+                  <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {result.checks.map((c) => {
+                      const fix = FIXES[c.id];
+                      return (
+                        <div key={c.id} className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-semibold">
+                              {c.passed ? "✅" : "⚠️"} {c.label}
+                            </span>
+                            <span className="text-xs text-slate-400">
+                              {c.points}/{c.maxPoints} pts
+                            </span>
+                          </div>
+                          <p className="mt-2 text-xs text-slate-400">{c.why}</p>
+                          {!c.passed && fix && fix.body && (
+                            <button
+                              onClick={() => copyText(fix.body!, c.id)}
+                              className="mt-3 text-xs font-medium text-emerald-400 underline hover:text-emerald-300"
+                            >
+                              {copiedKey === c.id ? "Template Copied!" : "Copy Fix Template"}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
     </div>
   );
 }
